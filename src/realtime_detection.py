@@ -1,9 +1,11 @@
+import logging
+import time
+
 import cv2
 import numpy as np
 import pupil_apriltags as apriltag
 from pypylon import pylon
-import logging
-import time
+
 
 # Constants & Configurations
 INTRINSIC_MATRIX = np.array(
@@ -28,6 +30,50 @@ OBJECT_POINTS = np.float32(
     ]
 )
 
+# Define the cube's corner points in 3D (assuming the tag is at the origin and the cube is 12cm each side)
+
+TAG_SIZE = 0.12  # Assuming the tag size is also 12 cm, replace with actual tag size if different
+CUBE_SIZE = TAG_SIZE
+cube_points = np.float32(
+    [
+        [0, 0, 0],
+        [CUBE_SIZE, 0, 0],
+        [CUBE_SIZE, CUBE_SIZE, 0],
+        [0, CUBE_SIZE, 0],
+        [0, 0, -CUBE_SIZE],
+        [CUBE_SIZE, 0, -CUBE_SIZE],
+        [CUBE_SIZE, CUBE_SIZE, -CUBE_SIZE],
+        [0, CUBE_SIZE, -CUBE_SIZE],
+    ]
+) - np.array(
+    [TAG_SIZE / 2, TAG_SIZE / 2, -CUBE_SIZE]
+)  # Offset to make the cube centered on the tag
+
+
+def draw_cube(image, corners, imgpts):
+    imgpts = imgpts.reshape(-1, 2)  # Reshape to ensure it is Nx2
+    imgpts = imgpts.astype(int)
+
+    # Define new colors in RGB format
+    ground_floor_color = (0, 128, 255)
+    pillars_color = (255, 0, 128)
+    top_layer_color = (128, 0, 255)
+
+    # Draw ground floor in purple
+    for i in range(4):
+        cv2.line(
+            image, tuple(imgpts[i]), tuple(imgpts[(i + 1) % 4]), ground_floor_color, 3
+        )
+
+    # Draw pillars in orange color
+    for i in range(4):
+        cv2.line(image, tuple(imgpts[i]), tuple(imgpts[i + 4]), pillars_color, 3)
+
+    # Draw top layer in yellow color
+    cv2.drawContours(image, [imgpts[4:8]], -1, top_layer_color, 3)
+
+    return image
+
 
 def draw_3d_axis(image, pose, intrinsic_matrix):
     # Define the axis points in 3D space (X, Y, Z)
@@ -39,7 +85,7 @@ def draw_3d_axis(image, pose, intrinsic_matrix):
     rotation_vec = pose[0].reshape(3, 1)
 
     # Project the 3D axis points back to 2D
-    axis_points *= 0.1  # Scale axis length to 10 cm
+    axis_points *= 0.05  # Scale axis length to 5 cm
     rotation_vec = rotation_vec.astype(np.float32)
     translation_vec = pose[1].astype(np.float32)
     intrinsic_matrix = intrinsic_matrix.astype(np.float32)
@@ -92,6 +138,7 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
 
         # Draw bounding rectangle and tag ID on the image
         rect_points = detection.corners.astype(int)
+        centroid = rect_points.mean(axis=0).astype(int)
         cv2.polylines(
             frame, [rect_points], isClosed=True, color=(0, 255, 0), thickness=2
         )
@@ -118,7 +165,10 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
         rotation_mat, _ = cv2.Rodrigues(rotation_vec)
 
         # Calculate Euler angles from the rotation matrix
-        sy = np.sqrt(rotation_mat[0, 0] * rotation_mat[0, 0] + rotation_mat[1, 0] * rotation_mat[1, 0])
+        sy = np.sqrt(
+            rotation_mat[0, 0] * rotation_mat[0, 0]
+            + rotation_mat[1, 0] * rotation_mat[1, 0]
+        )
         is_singular = sy < 1e-6
 
         if not is_singular:
@@ -127,14 +177,13 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
             z_angle = np.arctan2(rotation_mat[1, 0], rotation_mat[0, 0])
         else:
             x_angle = np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1])
-            y_angle = np.arctan2(-rotation_mat[2, 0], sy)   
+            y_angle = np.arctan2(-rotation_mat[2, 0], sy)
             z_angle = 0
 
         # Assigning roll, pitch, and yaw based on the specific convention
         roll = x_angle
         pitch = y_angle
         yaw = z_angle
-
 
         # Display distance and angles on the stream
         cv2.putText(
@@ -177,6 +226,18 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
         )
 
         draw_3d_axis(frame, (rotation_vec, translation_vec), intrinsic_matrix)
+        # Inside your loop after pose estimation
+        imgpts, _ = cv2.projectPoints(
+            cube_points,
+            rotation_vec,
+            translation_vec,
+            intrinsic_matrix,
+            DISTORTION_COEFFICIENTS,
+        )
+        imgpts = imgpts.reshape(-1, 2)  # Reshape to ensure it is Nx2
+        print("Image points:", imgpts)
+        assert imgpts.shape == (8, 2), "imgpts should be a Nx2 array"
+        frame = draw_cube(frame, rect_points, imgpts)
 
     # Resize for display
     frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
@@ -190,6 +251,7 @@ class PylonCamera:
                 pylon.TlFactory.GetInstance().CreateFirstDevice()
             )
             logging.info("Pylon camera initialized")
+
         except Exception as e:
             raise RuntimeError("Cannot connect to Pylon Camera: " + str(e))
 
@@ -206,13 +268,16 @@ class PylonCamera:
         converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
         while self.camera.IsGrabbing():
-            grabResult = self.camera.RetrieveResult(
+            grab_result = self.camera.RetrieveResult(
                 5000, pylon.TimeoutHandling_ThrowException
             )
 
-            if grabResult.GrabSucceeded():
-                image = converter.Convert(grabResult)
+            if grab_result.GrabSucceeded():
+                image = converter.Convert(grab_result)
                 img = image.GetArray()
+
+                # reduce the size of the image
+                img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
 
                 # Call the AprilTag detection function with the initialized detector
                 detect_apriltag_in_frame(
@@ -224,7 +289,7 @@ class PylonCamera:
                 if cv2.waitKey(1) & 0xFF == ord("q"):  # Exit the loop if 'q' is pressed
                     break
 
-            grabResult.Release()
+            grab_result.Release()
 
     cv2.destroyAllWindows()
 
@@ -235,7 +300,9 @@ class PylonCamera:
 
 if __name__ == "__main__":
     # Initialize logging
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        format="[%(asctime)s] %(levelname)s: %(message)s", level=logging.INFO
+    )
 
     camera = PylonCamera()
     try:

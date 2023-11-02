@@ -3,17 +3,17 @@ import numpy as np
 import pupil_apriltags as apriltag
 
 
-object_points = np.float32([    [-0.5, -0.5, 0],
-    [0.5, -0.5, 0],
-    [0.5, 0.5, 0],
-    [-0.5, 0.5, 0]
-])
+object_points = np.float32(
+    [[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]]
+)
 
 
 def draw_3d_axis(image, pose, intrinsic_matrix):
     # Define the axis points in 3D space (X, Y, Z)
-    axis_points = np.float32([[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]]).reshape(-1, 3)
-    
+    axis_points = np.float32([[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]]).reshape(
+        -1, 3
+    )
+
     # Get the rotation vector and ensure it's reshaped
     rotation_vec = pose[0].reshape(3, 1)
 
@@ -24,9 +24,11 @@ def draw_3d_axis(image, pose, intrinsic_matrix):
     rotation_vec = rotation_vec.astype(np.float32)
     translation_vec = pose[1].astype(np.float32)
     intrinsic_matrix = intrinsic_matrix.astype(np.float32)
-    distortion_coeffs = np.zeros((4,1), dtype=np.float32)
+    distortion_coeffs = np.zeros((4, 1), dtype=np.float32)
 
-    img_points, _ = cv2.projectPoints(axis_points, rotation_vec, translation_vec, intrinsic_matrix, distortion_coeffs)
+    img_points, _ = cv2.projectPoints(
+        axis_points, rotation_vec, translation_vec, intrinsic_matrix, distortion_coeffs
+    )
 
     # Draw the 3D axis on the image
     color = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]  # Colors for X, Y, Z axes
@@ -36,11 +38,10 @@ def draw_3d_axis(image, pose, intrinsic_matrix):
         cv2.arrowedLine(image, start_point, end_point, c, 2)
 
 
-
-def detect_apriltag(image_path,intrinsic_matrix):
+def detect_apriltag(image_path, intrinsic_matrix):
     # Read the image in color mode
     image = cv2.imread(image_path)
-    
+
     # Check if the image is loaded correctly
     if image is None:
         print(f"Failed to read image from {image_path}")
@@ -50,7 +51,7 @@ def detect_apriltag(image_path,intrinsic_matrix):
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # Initialize the AprilTag detector
-    detector = apriltag.Detector(families='tag36h11')
+    detector = apriltag.Detector(families="tag36h11")
 
     # Detect AprilTag in the image
     result = detector.detect(gray_image)
@@ -63,16 +64,30 @@ def detect_apriltag(image_path,intrinsic_matrix):
 
     # Overlay detections on the image
     for detection in result:
-        print(f"Detected tag {detection.tag_family} id {detection.tag_id} with hamming {detection.hamming}")
+        print(
+            f"Detected tag {detection.tag_family} id {detection.tag_id} with hamming {detection.hamming}"
+        )
 
         # Draw bounding rectangle and tag ID on the image
         rect_points = detection.corners.astype(int)
-        cv2.polylines(image, [rect_points], isClosed=True, color=(0, 255, 0), thickness=2)
+        cv2.polylines(
+            image, [rect_points], isClosed=True, color=(0, 255, 0), thickness=2
+        )
         centroid = rect_points.mean(axis=0).astype(int)
-        cv2.putText(image, str(detection.tag_id), tuple(centroid), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(
+            image,
+            str(detection.tag_id),
+            tuple(centroid),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            2,
+        )
 
         # Compute the pose of the tag
-        _, rotation_vec, translation_vec = cv2.solvePnP(object_points, detection.corners.astype(np.float32), intrinsic_matrix, None)
+        _, rotation_vec, translation_vec = cv2.solvePnP(
+            object_points, detection.corners.astype(np.float32), intrinsic_matrix, None
+        )
 
         print("Rotation vector:", rotation_vec)
         print("Translation vector:", translation_vec)
@@ -84,8 +99,15 @@ def detect_apriltag(image_path,intrinsic_matrix):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+
 if __name__ == "__main__":
     image_path = "tag36_11_00000.png"
     # You need to replace these with your actual camera parameters
-    intrinsic_matrix = np.array([[800, 0, 320], [0, 800, 240], [0, 0, 1]])
+    intrinsic_matrix = np.array(
+        [
+            [1.90148512e03, 0.00000000e00, 9.76377693e02],
+            [0.00000000e00, 1.91018989e03, 5.51258034e02],
+            [0.00000000e00, 0.00000000e00, 1.00000000e00],
+        ]
+    )
     detect_apriltag(image_path, intrinsic_matrix)
