@@ -117,20 +117,24 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
         # Compute the Euler angles from the rotation matrix
         rotation_mat, _ = cv2.Rodrigues(rotation_vec)
 
-        sy = np.sqrt(
-            rotation_mat[0, 0] * rotation_mat[0, 0]
-            + rotation_mat[1, 0] * rotation_mat[1, 0]
-        )
-        singular = sy < 1e-6
+        # Calculate Euler angles from the rotation matrix
+        sy = np.sqrt(rotation_mat[0, 0] * rotation_mat[0, 0] + rotation_mat[1, 0] * rotation_mat[1, 0])
+        is_singular = sy < 1e-6
 
-        if not singular:
-            roll = np.arctan2(rotation_mat[2, 1], rotation_mat[2, 2])
-            pitch = np.arctan2(-rotation_mat[2, 0], sy)
-            yaw = np.arctan2(rotation_mat[1, 0], rotation_mat[0, 0])
+        if not is_singular:
+            x_angle = np.arctan2(rotation_mat[2, 1], rotation_mat[2, 2])
+            y_angle = np.arctan2(-rotation_mat[2, 0], sy)
+            z_angle = np.arctan2(rotation_mat[1, 0], rotation_mat[0, 0])
         else:
-            roll = np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1])
-            pitch = np.arctan2(-rotation_mat[2, 0], sy)
-            yaw = 0
+            x_angle = np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1])
+            y_angle = np.arctan2(-rotation_mat[2, 0], sy)   
+            z_angle = 0
+
+        # Assigning roll, pitch, and yaw based on the specific convention
+        roll = x_angle
+        pitch = y_angle
+        yaw = z_angle
+
 
         # Display distance and angles on the stream
         cv2.putText(
