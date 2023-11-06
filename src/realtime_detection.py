@@ -6,6 +6,7 @@ import numpy as np
 import pupil_apriltags as apriltag
 from pypylon import pylon
 
+SCALE_FACTOR = 0.5
 
 # Constants & Configurations
 INTRINSIC_MATRIX = np.array(
@@ -15,24 +16,27 @@ INTRINSIC_MATRIX = np.array(
         [0.00000000e00, 0.00000000e00, 1.00000000e00],
     ]
 )
+
+INTRINSIC_MATRIX = INTRINSIC_MATRIX * SCALE_FACTOR
+
 DISTORTION_COEFFICIENTS = np.array(
     [0.04571354, -0.07891728, -0.0134629, 0.00627635, -0.47984874]
 )
 
 TAG_FAMILY = "tag36h11"
 AXIS_COLORS = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]  # Colors for X, Y, Z axes
-OBJECT_POINTS = np.float32(
-    [
-        [-0.06, -0.06, 0],  # -6 cm to 6 cm (12 cm total side length)
-        [0.06, -0.06, 0],
-        [0.06, 0.06, 0],
-        [-0.06, 0.06, 0],
-    ]
-)
+TAG_SIZE = 0.16  # Assuming the tag size is also 12 cm, replace with actual tag size if different
+
+OBJECT_POINTS = np.array([
+    [-TAG_SIZE / 2, -TAG_SIZE / 2, 0],  # Bottom-left corner
+    [TAG_SIZE / 2, -TAG_SIZE / 2, 0],   # Bottom-right corner
+    [TAG_SIZE / 2, TAG_SIZE / 2, 0],    # Top-right corner
+    [-TAG_SIZE / 2, TAG_SIZE / 2, 0]    # Top-left corner
+], dtype=np.float32)
 
 # Define the cube's corner points in 3D (assuming the tag is at the origin and the cube is 12cm each side)
 
-TAG_SIZE = 0.12  # Assuming the tag size is also 12 cm, replace with actual tag size if different
+
 CUBE_SIZE = TAG_SIZE
 cube_points = np.float32(
     [
@@ -102,6 +106,32 @@ def draw_3d_axis(image, pose, intrinsic_matrix):
         end_point = tuple(img_points[i].ravel().astype(int))
         cv2.arrowedLine(image, start_point, end_point, c, 2)
 
+def draw_plane(image, origin, pose, intrinsic_matrix, plane_size):
+    # Define the four corners of the plane in the tag's coordinate system
+    plane_points = np.array([
+        [0, 0, 0],
+        [plane_size[0], 0, 0],
+        [plane_size[0], plane_size[1], 0],
+        [0, plane_size[1], 0]
+    ], dtype=np.float32)-origin
+    
+    # Project the plane corners to the image
+    image_points, _ = cv2.projectPoints(
+        plane_points,
+        pose[0],  # rotation vector
+        pose[1],  # translation vector
+        intrinsic_matrix,
+        DISTORTION_COEFFICIENTS
+    )
+    
+    image_points = image_points.reshape(-1, 2)  # Reshape to ensure it is Nx2
+    image_points = image_points.astype(int)  # Convert to integer for drawing functions
+    
+    # Draw the plane on the image using a filled convex polygon
+    cv2.fillConvexPoly(image, np.array(image_points), (100, 200, 100), lineType=cv2.LINE_AA)
+    
+    return image
+
 
 def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
     if not hasattr(detect_apriltag_in_frame, "prev_time"):
@@ -124,15 +154,12 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
     # Convert frame to grayscale for detection
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Initialize the AprilTag detector
-    # detector = apriltag.Detector(families='tag36h11')
-
     # Detect AprilTag in the frame
     result = detector.detect(gray_frame)
 
     # Overlay detections on the image
     for detection in result:
-        print(
+        logging.info(
             f"Detected tag {detection.tag_family} id {detection.tag_id} with hamming {detection.hamming}"
         )
 
@@ -160,87 +187,39 @@ def detect_apriltag_in_frame(frame, intrinsic_matrix, detector):
             intrinsic_matrix,
             DISTORTION_COEFFICIENTS,
         )
+        if _:
+            draw_3d_axis(frame, (rotation_vec, translation_vec), intrinsic_matrix)
+            # Inside your loop after pose estimation
+            imgpts, _ = cv2.projectPoints(
+                cube_points,
+                rotation_vec,
+                translation_vec,
+                intrinsic_matrix,
+                DISTORTION_COEFFICIENTS,
+            )
+            imgpts = imgpts.reshape(-1, 2)  # Reshape to ensure it is Nx2
+            assert imgpts.shape == (8, 2), "imgpts should be a Nx2 array"
+            frame = draw_cube(frame, rect_points, imgpts)
 
-        # Compute the Euler angles from the rotation matrix
-        rotation_mat, _ = cv2.Rodrigues(rotation_vec)
+            # Calculate the distance to the tag
+            distance = np.linalg.norm(translation_vec)
+            cv2.putText(
+                frame,
+                f"Distance: {distance:.2f} m",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 255),
+                2,
+            )
 
-        # Calculate Euler angles from the rotation matrix
-        sy = np.sqrt(
-            rotation_mat[0, 0] * rotation_mat[0, 0]
-            + rotation_mat[1, 0] * rotation_mat[1, 0]
-        )
-        is_singular = sy < 1e-6
+            # Inside your loop after pose estimation
+            plane_size = (0.19, 0.25) # size of an iPad
+            frame = draw_plane(frame, origin=(OBJECT_POINTS[0]), pose=(rotation_vec, translation_vec), intrinsic_matrix=INTRINSIC_MATRIX, plane_size=plane_size)
 
-        if not is_singular:
-            x_angle = np.arctan2(rotation_mat[2, 1], rotation_mat[2, 2])
-            y_angle = np.arctan2(-rotation_mat[2, 0], sy)
-            z_angle = np.arctan2(rotation_mat[1, 0], rotation_mat[0, 0])
-        else:
-            x_angle = np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1])
-            y_angle = np.arctan2(-rotation_mat[2, 0], sy)
-            z_angle = 0
-
-        # Assigning roll, pitch, and yaw based on the specific convention
-        roll = x_angle
-        pitch = y_angle
-        yaw = z_angle
-
-        # Display distance and angles on the stream
-        cv2.putText(
-            frame,
-            f"Roll: {np.degrees(roll):.2f} deg",
-            (10, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2,
-        )
-        cv2.putText(
-            frame,
-            f"Pitch: {np.degrees(pitch):.2f} deg",
-            (10, 120),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2,
-        )
-        cv2.putText(
-            frame,
-            f"Yaw: {np.degrees(yaw):.2f} deg",
-            (10, 150),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2,
-        )
-        tag_width = np.linalg.norm(rect_points[0] - rect_points[1])
-        tag_height = np.linalg.norm(rect_points[1] - rect_points[2])
-        cv2.putText(
-            frame,
-            f"Tag W: {tag_width:.2f}px H: {tag_height:.2f}px",
-            (10, 210),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2,
-        )
-
-        draw_3d_axis(frame, (rotation_vec, translation_vec), intrinsic_matrix)
-        # Inside your loop after pose estimation
-        imgpts, _ = cv2.projectPoints(
-            cube_points,
-            rotation_vec,
-            translation_vec,
-            intrinsic_matrix,
-            DISTORTION_COEFFICIENTS,
-        )
-        imgpts = imgpts.reshape(-1, 2)  # Reshape to ensure it is Nx2
-        print("Image points:", imgpts)
-        assert imgpts.shape == (8, 2), "imgpts should be a Nx2 array"
-        frame = draw_cube(frame, rect_points, imgpts)
 
     # Resize for display
-    frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+    frame = cv2.resize(frame, (0, 0), fx=SCALE_FACTOR, fy=SCALE_FACTOR)
     return frame
 
 
@@ -257,7 +236,7 @@ class PylonCamera:
 
     def start_stream(self):
         # Initialize the AprilTag detector once
-        detector = apriltag.Detector(families="tag36h11")
+        detector = apriltag.Detector(families=TAG_FAMILY)
 
         # Grabbing continuously with minimal delay
         self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
@@ -277,7 +256,7 @@ class PylonCamera:
                 img = image.GetArray()
 
                 # reduce the size of the image
-                img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+                img = cv2.resize(img, (0, 0), fx=SCALE_FACTOR, fy=SCALE_FACTOR)
 
                 # Call the AprilTag detection function with the initialized detector
                 detect_apriltag_in_frame(
